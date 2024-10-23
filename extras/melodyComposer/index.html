@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+</head>
+
+<body>
+    <h1>Melody composer</h1>
+    Load file: <input type="file" name="load" id="load"><br>
+    File name: <input type="text" id="filename" value="melody.mel"><br>
+    <button onclick="save()">Save</button><button onclick="play()">Play</button><br><br>
+    <div id="melody">
+
+    </div>
+</body>
+
+</html>
+
+<template>
+    <div class="note">
+        <div style="float: left;">
+            <button id="trash" onclick="this.parentElement.parentElement.remove()">🗑</button>
+            <label for="freq">Note:</label><br>
+            <select name="Frequency" id="freq">
+            </select><br>
+            <label for="duration">Duration:</label><br>
+            <input id="duration" type="number" min="0" max="65535" value="100"> ms
+        </div>
+        <button style="float: right; height: 100%; margin-left: 0.5rem;"
+            onclick="addNote(this.parentElement)">+</button>
+    </div>
+</template>
+
+<style>
+    #melody {
+        display: flex;
+        overflow: auto;
+    }
+
+    .note {
+        min-width: 10rem;
+        border: 1px solid black;
+        padding: 0.5rem;
+
+        #trash {
+            float: right;
+        }
+    }
+</style>
+
+<script>
+    const notes = {
+        "Off": 0,
+        /*"B0": 31,
+        "C1": 33,
+        "CS1": 35,
+        "D1": 37,
+        "DS1": 39,
+        "E1": 41,
+        "F1": 44,
+        "FS1": 46,
+        "G1": 49,
+        "GS1": 52,
+        "A1": 55,
+        "AS1": 58,
+        "B1": 62,
+        "C2": 65,
+        "CS2": 69,
+        "D2": 73,
+        "DS2": 78,
+        "E2": 82,
+        "F2": 87,
+        "FS2": 93,
+        "G2": 98,
+        "GS2": 104,
+        "A2": 110,
+        "AS2": 117,
+        "B2": 123,
+        "C3": 131,
+        "CS3": 139,
+        "D3": 147,
+        "DS3": 156,
+        "E3": 165,
+        "F3": 175,
+        "FS3": 185,
+        "G3": 196,
+        "GS3": 208,
+        "A3": 220,
+        "AS3": 233,
+        "B3": 247,
+        "C4": 262,
+        "CS4": 277,
+        "D4": 294,
+        "DS4": 311,
+        "E4": 330,
+        "F4": 349,
+        "FS4": 370,
+        "G4": 392,
+        "GS4": 415,
+        "A4": 440,
+        "AS4": 466,
+        "B4": 494,*/
+        "C5": 523,
+        "CS5": 554,
+        "D5": 587,
+        "DS5": 622,
+        "E5": 659,
+        "F5": 698,
+        "FS5": 740,
+        "G5": 784,
+        "GS5": 831,
+        "A5": 880,
+        "AS5": 932,
+        "B5": 988,
+        "C6": 1047,
+        "CS6": 1109,
+        "D6": 1175,
+        "DS6": 1245,
+        "E6": 1319,
+        "F6": 1397,
+        "FS6": 1480,
+        "G6": 1568,
+        "GS6": 1661,
+        "A6": 1760,
+        "AS6": 1865,
+        "B6": 1976,
+        "C7": 2093,
+        "CS7": 2217,
+        "D7": 2349,
+        "DS7": 2489,
+        "E7": 2637,
+        "F7": 2794,
+        "FS7": 2960,
+        "G7": 3136,
+        "GS7": 3322,
+        "A7": 3520,
+        "AS7": 3729,
+        "B7": 3951,
+        /*"C8": 4186,
+        "CS8": 4435,
+        "D8": 4699,
+        "DS8": 4978*/
+    }
+    let domNoteTemplate = document.querySelector("template").content;
+    let domMelody = document.querySelector("#melody");
+    let domFilename = document.querySelector("#filename");
+
+    for (const [key, value] of Object.entries(notes)) {
+        let noteOption = document.createElement("option");
+        noteOption.innerText = key;
+        noteOption.value = value;
+        domNoteTemplate.querySelector("#freq").appendChild(noteOption);
+    }
+
+    function addNote(afterElement, frequency = 0, duration = 100) {
+        console.log(afterElement);
+        let newNote = domNoteTemplate.cloneNode(true);
+        newNote.querySelector("#freq").value = frequency;
+        newNote.querySelector("#duration").value = duration;
+        domMelody.insertBefore(newNote, afterElement?.nextSibling);
+    }
+
+    function save() {
+        const lengthUintArray = new Uint32Array(1);
+        lengthUintArray[0] = domMelody.children.length;
+        const melodyUintArray = new Uint16Array(domMelody.children.length * 2);
+        for (let i = 0; i < domMelody.children.length; i++) {
+            let note = domMelody.children[i];
+            let frequency = note.querySelector("#freq").value;
+            let duration = note.querySelector("#duration").value;
+            melodyUintArray[2 * i] = frequency;
+            melodyUintArray[2 * i + 1] = duration;
+        }
+        const blob = new Blob([lengthUintArray, melodyUintArray], {
+            type: 'application/octet-stream'
+        })
+        const url = window.URL.createObjectURL(blob);
+        downloadURL(url, domFilename.value);
+        setTimeout(() => window.URL.revokeObjectURL(url), 1000)
+    }
+
+    const downloadURL = (data, fileName) => {
+        const a = document.createElement('a')
+        a.href = data
+        a.download = fileName
+        document.body.appendChild(a)
+        a.style.display = 'none'
+        a.click()
+        a.remove()
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    oscillator.type = 'sine';
+    oscillator.frequency.value = 440; // value in hertz
+
+    const gainNode = audioContext.createGain();
+    gainNode.gain.value = 0;
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    oscillator.start();
+
+    document.addEventListener('click', () => audioContext.resume(), { once: true });
+
+    async function play() {
+        for (let i = 0; i < domMelody.children.length; i++) {
+            let note = domMelody.children[i];
+            let frequency = note.querySelector("#freq").value;
+            let duration = note.querySelector("#duration").value;
+            if (frequency == 0) {
+                gainNode.gain.value = 0;
+            } else {
+                gainNode.gain.value = 0.5;
+                oscillator.frequency.value = frequency
+            }
+            await sleep(duration);
+        }
+        gainNode.gain.value = 0;
+    }
+
+    document.getElementById('load')
+        .addEventListener('change', function () {
+            let fr = new FileReader();
+            fr.onload = function () {
+                let lengthArray = new Uint32Array(fr.result, 0, 1);
+                let notesArray = new Uint16Array(fr.result, 4);
+                console.log(lengthArray);
+                console.log(notesArray);
+                domMelody.replaceChildren();
+                for (let i = 0; i < lengthArray[0]; i++) {
+                    let frequency = notesArray[i * 2];
+                    let duration = notesArray[i * 2 + 1];
+                    addNote(null, frequency, duration);
+                }
+            }
+            domFilename.value = this.files[0].name;
+            console.log(this.files);
+
+            fr.readAsArrayBuffer(this.files[0]);
+        })
+
+    addNote(null);
+
+
+</script>
