@@ -1,5 +1,6 @@
 #include "FS.h"
 #include "SD_MMC.h"
+#include "driver/uart.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <WiFiMulti.h>
@@ -15,9 +16,6 @@
 #include "Camera.h"
 #include <Update.h>
 #include "Discord.h"
-
-#define CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7 1
-#define CONFIG_ESP_BROWNOUT_DET 1
 
 #define STR_WIFI "wifi"
 #define STR_SSID "ssid"
@@ -60,20 +58,34 @@
 #define uS_TO_S_FACTOR 1000000ULL
 #define S_TO_MIN_FACTOR 60ULL
 
-#define LED_GPIO_NUM 14
-#define LED_GPIO_NUM GPIO_NUM_14
-#define BUZZER_PIN GPIO_NUM_19
-#define VIBRATION_PIN GPIO_NUM_20
-#define SD_CS 9
-#define SD_MOSI 38
-#define SD_CLK 39
-#define SD_MISO 40
+// Pin mapping
+#define PIN_BAT_LEVEL 1
+#define PIN_SHUTTER GPIO_NUM_2
+#define PIN_LED GPIO_NUM_3
+#define PIN_FEEDBACK GPIO_NUM_44
+#define PIN_UTIL_IO GPIO_NUM_8
+#define PIN_PERIPH_PWR 14
+#define PIN_POWERED 21
+#define PIN_CAM_RESET GPIO_NUM_43
+
+#define PIN_MIC_CLK GPIO_NUM_47
+#define PIN_MIC_DATA GPIO_NUM_48
+
+#define PIN_USB_DP 20
+#define PIN_USB_DM 19
+
+#define PIN_SD_CS 9
+#define PIN_SPI_PICO 38
+#define PIN_SPI_POCI 40
+#define PIN_SPI_CLK 39
+
+#define BUTTON_PIN_BITMASK(GPIO) (1ULL << GPIO)
+
+#define DEBUG true
+
+static const char* TAG = "Main";
+
 #define WATCHDOG_TIMEOUT 60000UL //Things have gone wrong if we have looped for a minute.
-
-gpio_num_t WAKE_GPIO_NUM = GPIO_NUM_19;
-
-// USB DEBUG?
-extern const bool SERIAL_DEBUG = false;
 
 // How long after boot to determine picture or audio recording
 const uint16_t BOOT_DELAY = 300;
@@ -89,75 +101,78 @@ JsonDocument configuration;
 WiFiClientSecure client;
 AsyncTelegram2 myBot(client);
 Discord discord;
-Buzzer buzzer(BUZZER_PIN);
-PWMPlayer vibration(VIBRATION_PIN, false);
-PWMPlayer led(LED_GPIO_NUM, true);
-Dictaphone dictaphone;
+Buzzer buzzer(PIN_UTIL_IO);
+PWMPlayer vibration(PIN_FEEDBACK, false);
+PWMPlayer led(PIN_LED, true);
+Dictaphone dictaphone(PIN_MIC_CLK,PIN_MIC_DATA);
 Camera camera;
 
 bool timeSet = false;
-bool uploadFinished = false;
+bool transmissionFinished = false;
+bool messageDelivered;
 bool justCapturedAudio = false;
 bool justCapturedPicture = false;
 esp_sleep_wakeup_cause_t wakeup_reason;
 
 void setup() {
-  esp_log_level_set("*", ESP_LOG_ERROR); // set all components to ERROR level -> https://esp32.com/viewtopic.php?t=30954
-  if (SERIAL_DEBUG){ WAKE_GPIO_NUM = GPIO_NUM_8; }
+
+  if(DEBUG){
+    delay(200);
+  }
+
   wakeup_reason = esp_sleep_get_wakeup_cause();
 
-  if (SERIAL_DEBUG) {
-    // If we have serial, enable it and print boot info
-    Serial.begin(115200);
-    Serial.setDebugOutput(true);
-    switch (wakeup_reason) {
-      case ESP_SLEEP_WAKEUP_EXT0: Serial.println("Wakeup caused by external signal using RTC_IO"); break;
-      case ESP_SLEEP_WAKEUP_EXT1: Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
-      case ESP_SLEEP_WAKEUP_TIMER: Serial.println("Wakeup caused by timer"); break;
-      case ESP_SLEEP_WAKEUP_TOUCHPAD: Serial.println("Wakeup caused by touchpad"); break;
-      case ESP_SLEEP_WAKEUP_ULP: Serial.println("Wakeup caused by ULP program"); break;
-      default: Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason); break;
-    }
-    Serial.print("Wake pin state: ");
-    Serial.println(digitalRead(WAKE_GPIO_NUM));
-    //gpio_dump_io_configuration(stdout, (1ULL << WAKE_GPIO_NUM) | (1ULL << PWDN_GPIO_NUM));
+  switch (wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_EXT0: ESP_LOGI(TAG,"Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1: ESP_LOGI(TAG,"Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER: ESP_LOGI(TAG,"Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD: ESP_LOGI(TAG,"Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP: ESP_LOGI(TAG,"Wakeup caused by ULP program"); break;
+    default:  ESP_LOGI(TAG, "Wakeup was not caused by deep sleep: %d\n", wakeup_reason); break;
   }
 
   initializeGPIO();
+  ESP_LOGI(TAG, "Wake pin state: %d", digitalRead(PIN_SHUTTER));
 
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {  // We woke up from the button being pressed, that means take a picture or audio
-    if (!dictaphone.begin()) {
-      goToSleep();  // If failed to initialize, sleep
-    }
-    if (!camera.begin()) {
-      camera.stop();
-      goToSleep();  // If failed to initialize, sleep
-    }
-  
-    // After boot we may take a picture or begin recording.
-    // Recording begins if the button has been held for more than BOOT_DELAY.
-    // Picture may begin any time before if the button has been let go.
-    while (millis() < BOOT_DELAY && isCaptureButtonHeld()) {
-      // While waiting, start recording out the i2s buffer to discard odd offset first 100ms
-      dictaphone.warmup();
-      camera.warmup();
-    }
-
-    digitalWrite(LED_GPIO_NUM, LOW);             // Turn LED on TODO, actually animate
-    if (isCaptureButtonHeld()) {
-      dictaphone.beginRecording();
-      while (isCaptureButtonHeld()) {
-        dictaphone.continueRecording();
-      }
-      justCapturedAudio = true;
-    } else {
-      if (!camera.takePicture()) {
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1 || wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {  // We woke up from external input
+    if (esp_sleep_get_ext1_wakeup_status() == BUTTON_PIN_BITMASK(PIN_SHUTTER)){ // Woke up from button, that means take a picture or audio
+      if (!camera.begin()) {
         camera.stop();
-        goToSleep();
+        delay(200);
+        goToSleep();  // If failed to initialize, sleep
       }
-      justCapturedPicture = true;
+      ESP_LOGI(TAG, "Camera began");
+
+      if (!dictaphone.begin()) {
+        delay(200);
+        goToSleep();  // If failed to initialize, sleep
+      }
+    
+      // After boot we may take a picture or begin recording.
+      // Recording begins if the button has been held for more than BOOT_DELAY.
+      // Picture may begin any time before if the button has been let go.
+      while (millis() < BOOT_DELAY && isCaptureButtonHeld()) {
+        // While waiting, start recording out the i2s buffer to discard odd offset first 100ms
+        dictaphone.warmup();
+        camera.warmup();
+      }
+
+      digitalWrite(PIN_LED, HIGH);             // Turn LED on TODO, actually animate
+      if (isCaptureButtonHeld()) {
+        dictaphone.beginRecording();
+        while (isCaptureButtonHeld()) {
+          dictaphone.continueRecording();
+        }
+        justCapturedAudio = true;
+      } else {
+        if (!camera.takePicture()) {
+          camera.stop();
+          goToSleep();
+        }
+        justCapturedPicture = true;
+      }
+    digitalWrite(PIN_LED, LOW);  // Turn LED off
     }
-    digitalWrite(LED_GPIO_NUM, HIGH);  // Turn LED off
   }
 
   // Set up SD card for reading, sleeping if anything fails.
@@ -169,7 +184,7 @@ void setup() {
   tzset();
 
   if (isNewlyBooted()) {
-    if (SERIAL_DEBUG) { Serial.print("Newly booted"); }
+    ESP_LOGI(TAG,"Newly booted");
     updateFromFS(SD_MMC);   // Check if we have an update file available on SD card, and then perform update. Otherwise move on.
     ensureFilestructure();  // Create directories if not exist
   }
@@ -183,9 +198,8 @@ void setup() {
       delay(5);
     }
     dictaphone.processRecording(configuration[STR_AUDIO_LIMITER]);
-    dictaphone.saveRecording(getNamePrefix());
+    dictaphone.saveRecording(SD_MMC, getNamePrefix());
     updateStatistics(0,1,dictaphone.getSecondsRecorded());
-    goToSleep();
   }
 
   if (justCapturedPicture) {
@@ -197,10 +211,9 @@ void setup() {
       delay(5);
     }
 
-    camera.savePicture(getNamePrefix(),configuration[STR_PHOTO_ROTATION]);
+    camera.savePicture(SD_MMC, getNamePrefix(),configuration[STR_PHOTO_ROTATION]);
     camera.stop();
     updateStatistics(1,0,0);
-    goToSleep();
   }
 
   // We woke up from a cold boot or from timer, ensure our time is good
@@ -209,20 +222,21 @@ void setup() {
     struct tm timeinfo;
     getLocalTime(&timeinfo);
     if (timeinfo.tm_year < 123 || isNTPOld()) {  // tm_year is years since 1900, 123 would be 2023. Or if last sync was a day ago. 
-      if (SERIAL_DEBUG) { Serial.println("Setting time"); }
+      ESP_LOGI(TAG,"Setting time");
       sntp_set_time_sync_notification_cb(timeavailable);
       configTzTime(time_zone, ntpServer1);
       uint32_t whileTimer = 0;
       while (!timeSet) {
         delay(200);
         whileTimer += 200;
-        if (SERIAL_DEBUG) {Serial.print("."); }
+        ESP_LOGV(TAG,".");
         if (whileTimer>WATCHDOG_TIMEOUT){
+          ESP_LOGW(TAG,"Setting time hit watchdog timeout");
           goToSleep(); // Failed to get time within two minutes? Sleep and try again later.
         }
       }
     }
-    if (SERIAL_DEBUG) { printLocalTime(); }
+    printLocalTime();
   }
   if (hasPicturesToUpload() && withinUploadTime()) {
     connectTelegramAndUploadAvailable();
@@ -230,14 +244,10 @@ void setup() {
   goToSleep();
 }
 
-
 void timeavailable(struct timeval *t) {
   timeSet = true;
-  
-  if (SERIAL_DEBUG) {
-    Serial.println("Got time adjustment from NTP!");
-    printLocalTime();
-  }
+  ESP_LOGI(TAG,"Got time adjustment from NTP!");
+  printLocalTime();
   
   fs::FS &fs = SD_MMC;
   File syncFile = fs.open(FILENAME_SYNCDAY, FILE_WRITE, true);
@@ -251,10 +261,10 @@ void timeavailable(struct timeval *t) {
 void printLocalTime() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time");
+    ESP_LOGE(TAG,"Failed to obtain time");
     return;
   }
-  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+  ESP_LOGI(TAG,"%d-%d-%d %d:%d:%d", timeinfo.tm_year+1900, timeinfo.tm_mon+1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec );
 }
 
 // Internal RTC has some drift, so resync every day
@@ -296,44 +306,35 @@ bool isFeedbackPlaying(){
 }
 
 void initializeSDCard() {
-  if (!SD_MMC.setPins(SD_CLK, SD_MOSI, SD_MISO)) {
-    if (SERIAL_DEBUG) { Serial.println("Failed to set SD pins!"); }
+  if (!SD_MMC.setPins(PIN_SPI_CLK, PIN_SPI_PICO, PIN_SPI_POCI)) {
+    ESP_LOGE(TAG,"Failed to set SD pins!");
     goToSleep();
   }
   if (!SD_MMC.begin("/sdcard", true)) {
-    if (SERIAL_DEBUG) { Serial.println("SD Card Mount Failed"); }
+    ESP_LOGE(TAG,"SD Card Mount Failed");
     goToSleep();
   }
   uint8_t cardType = SD_MMC.cardType();
   if (cardType == CARD_NONE) {
-    if (SERIAL_DEBUG) { Serial.println("No SD Card attached"); }
+    ESP_LOGE(TAG,"No SD Card attached");
     goToSleep();
   }
 }
 
 void initializeGPIO() {
   // Ready GPIO for use
-  gpio_deep_sleep_hold_dis();  // Has been held during sleep to enable pulling down
-  gpio_hold_dis(PWDN_GPIO_NUM);
+  uart_driver_delete(UART_NUM_0);
+  gpio_reset_pin(PIN_FEEDBACK);
+  gpio_reset_pin(PIN_CAM_RESET);
 
-  pinMode(LED_GPIO_NUM, OUTPUT);
-  digitalWrite(LED_GPIO_NUM, HIGH);  // Start off (LED behind inverting transistor)
-  if (!SERIAL_DEBUG) {               // Only enable vibration pin if we are not actually connecting over usb
-    // Configure USB pins for GPIO. May not be necessary
-    gpio_config_t usb_phy_conf = {
-      .pin_bit_mask = (1ULL << GPIO_NUM_19) | (1ULL << GPIO_NUM_20),
-      .mode = GPIO_MODE_INPUT_OUTPUT,
-      .pull_up_en = GPIO_PULLUP_DISABLE,
-      .pull_down_en = GPIO_PULLDOWN_DISABLE,
-      .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&usb_phy_conf);
-    gpio_hold_dis(VIBRATION_PIN);
-    pinMode(VIBRATION_PIN, OUTPUT);
-    digitalWrite(VIBRATION_PIN, LOW);  // Start off
-  }
+  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_PERIPH_PWR, OUTPUT);
+  //pinMode(PIN_FEEDBACK, OUTPUT);
+  pinMode(PIN_POWERED, INPUT);
+  pinMode(PIN_SHUTTER, INPUT);
 
-  pinMode(WAKE_GPIO_NUM, INPUT_PULLDOWN);
+  digitalWrite(PIN_PERIPH_PWR, LOW);
+  analogReadResolution(12);
 }
 
 void initializeConfiguration() {
@@ -347,7 +348,7 @@ void initializeConfiguration() {
   configuration[STR_DISCORD][STR_ENABLED] = false;
   configuration[STR_DISCORD][STR_ID] = "1234567890123456789";
   configuration[STR_DISCORD][STR_TOKEN] = "";
-  configuration[STR_DISCORD][STR_NAME] = "AutCorder";
+  configuration[STR_DISCORD][STR_NAME] = "CareRecorder";
 
   configuration[STR_WIFI_TIMEOUT] = 4;
   configuration[STR_PHOTO_ROTATION] = 3;
@@ -389,7 +390,7 @@ void initializeConfiguration() {
     File configFile = fs.open(FILENAME_CONFIG);
     DeserializationError error = deserializeJson(configuration, configFile);
     if (error) {
-      if (SERIAL_DEBUG) { Serial.println(F("Failed to read file, using default configuration")); }
+      ESP_LOGE(TAG,"Failed to read file, using default configuration");
     }
   }else{
     File configFile = fs.open(FILENAME_CONFIG, FILE_WRITE, true);
@@ -432,7 +433,7 @@ void updateStatistics(uint8_t picturesTaken, uint8_t clipsRecorded , uint16_t se
 }
 
 bool isCaptureButtonHeld() {
-  return (digitalRead(WAKE_GPIO_NUM) == HIGH);
+  return (digitalRead(PIN_SHUTTER) == HIGH);
 }
 
 bool withinUploadTime() {
@@ -476,23 +477,27 @@ bool hasPicturesToUpload() {
   fs::FS &fs = SD_MMC;
   File newDir = fs.open("/new");
   if (!newDir || !newDir.isDirectory()) {
-    if (SERIAL_DEBUG) { Serial.println("Error scanning new dir"); }
+    ESP_LOGE(TAG,"Error scanning new dir");
     return false;
   }
   File file = newDir.openNextFile();
   if (file) {
+    file.close();
+    ESP_LOGI(TAG,"Has new files to upload");
     return true;
   }
+  ESP_LOGI(TAG,"No files to upload");
   return false;
 }
 
 void messageSent(bool sent) {
-  uploadFinished = true;
   if (sent) {
-    if (SERIAL_DEBUG) {Serial.println("Last message was delivered");}
+    ESP_LOGI(TAG,"Last message was delivered");
   } else {
-    if (SERIAL_DEBUG) {Serial.println("Last message was NOT delivered");}
+    ESP_LOGW(TAG,"Last message was NOT delivered");
+    messageDelivered = false;
   }
+  transmissionFinished = true;
 }
 
 void getTelegramMessages() {
@@ -502,17 +507,16 @@ void getTelegramMessages() {
 
     // Received a text message
     if (msgType == MessageText) {
-      if (SERIAL_DEBUG) {
-        String msgText = msg.text;
-        Serial.print("Text message received: ");
-        Serial.println(msgText);
-      }
+      ESP_LOGI(TAG,"Text message received: %s", msg.text);
     }
   }
 }
 
+const char* token =  "xxxxxxxxxxx:xxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+
 void connectTelegramAndUploadAvailable() {
   if (configuration[STR_TELEGRAM][STR_ENABLED]){
+    ESP_LOGI(TAG,"Initializing Telegram");
     myBot.setUpdateTime(500);  // Minimum time between telegram bot calls
     myBot.setTelegramToken(configuration[STR_TELEGRAM][STR_TOKEN]);
     myBot.addSentCallback(messageSent, 3000);
@@ -523,77 +527,70 @@ void connectTelegramAndUploadAvailable() {
   }
   
   if (hasPicturesToUpload()) {
-
+    ESP_LOGI(TAG,"Has pictures to upload");
     fs::FS &fs = SD_MMC;
     File newDir = fs.open("/new");
     if (!newDir || !newDir.isDirectory()) {
-      if (SERIAL_DEBUG) { Serial.println("Error scanning new dir"); }
+      ESP_LOGE(TAG,"Error scanning new dir");
       return;
     }
-  File file = newDir.openNextFile();
-  while (file) {
-  if (file.isDirectory()) {
-    continue;
-  } else {
-    if (configuration[STR_TELEGRAM][STR_ENABLED]) {
-      JsonArray chatIds = configuration[STR_TELEGRAM][STR_CHAT_ID].as<JsonArray>();
-      if (chatIds[0] == 0) {
-        if (SERIAL_DEBUG) { Serial.println("Bad Telegram chat id"); }
-        continue;
-      }
-      for (JsonVariant chatIdJson : chatIds) {
-        int64_t chatId = chatIdJson.as<int64_t>();
-        File fileToSend = fs.open(file.path());
-        if (SERIAL_DEBUG) {
-          Serial.print("Uploading: ");
-          Serial.print(fileToSend.name());
-          Serial.print("  of size: ");
-          Serial.print(fileToSend.size());
-          Serial.print("  to: ");
-          Serial.println(chatId);
+    File file = newDir.openNextFile();
+    while (file) {
+    if (file.isDirectory()) {
+      continue;
+    } else {
+      if (configuration[STR_TELEGRAM][STR_ENABLED]) {
+        JsonArray chatIds = configuration[STR_TELEGRAM][STR_CHAT_ID].as<JsonArray>();
+        if (chatIds[0] == 0) {
+          ESP_LOGE(TAG,"Bad Telegram chat id");
+          continue;
         }
-        // Check what we are sending, and send it
-      
-        if (String(fileToSend.name()).endsWith(".jpg")) {
-          myBot.sendPhoto(chatId, fileToSend, fileToSend.size(), fileToSend.name(), fileToSend.name());
-        } else {
-          myBot.sendDocument(chatId, fileToSend, fileToSend.size(), AsyncTelegram2::DocumentType::VOICE, fileToSend.name(), fileToSend.name());
-        }
-      
-        // Wait for upload to finish
-        uint32_t whileTimer = 0;
-        while (!uploadFinished) {
-          getTelegramMessages();
-          delay(10);
-          whileTimer += 10;
-          playProgressFeedback();
-          if (SERIAL_DEBUG) {
+        for (JsonVariant chatIdJson : chatIds) {
+          int64_t chatId = chatIdJson.as<int64_t>();
+          File fileToSend = fs.open(file.path());
+          ESP_LOGI(TAG,"Uploading: %s of size: %d to: %d", fileToSend.name(),fileToSend.size(),chatId);
+          // Check what we are sending, and send it
+        
+          if (String(fileToSend.name()).endsWith(".jpg")) {
+            myBot.sendPhoto(chatId, fileToSend, fileToSend.size(), fileToSend.name(), fileToSend.name());
+          } else {
+            myBot.sendDocument(chatId, fileToSend, fileToSend.size(), AsyncTelegram2::DocumentType::VOICE, fileToSend.name(), fileToSend.name());
+          }
+        
+          // Wait for upload to finish
+          uint32_t whileTimer = 0;
+          messageDelivered = true;
+          while (!transmissionFinished) {
+            getTelegramMessages();
             delay(50);
             whileTimer += 50;
-            Serial.print(".");
+            playProgressFeedback();
+            ESP_LOGV(TAG,".");
+            if (whileTimer > WATCHDOG_TIMEOUT){
+              ESP_LOGW(TAG,"Upload hit watchdog timeout");
+              goToSleep(); // Failed to upload within two minutes? Sleep and try again later.
+            }
           }
-          if (whileTimer > WATCHDOG_TIMEOUT){
-            goToSleep(); // Failed to upload within two minutes? Sleep and try again later.
-          }
+          transmissionFinished = false;
         }
-        uploadFinished = false;
+      }
+      if (configuration[STR_DISCORD][STR_ENABLED]){
+        if (!discord.sendFile(file)){
+          ESP_LOGE(TAG,"Failed to send to Discord");
+          messageDelivered = false;
+        }
+      }
+      if(messageDelivered){
+        // Move the sent file to old pictures or delete depending on config
+        if (configuration[STR_UPLOAD][STR_UPLOAD_KEEP_FILE_AFTER]) {
+          fs.rename("/new/" + String(file.name()), "/old/" + String(file.name()));
+        } else {
+          fs.remove("/new/" + String(file.name()));
+        }
       }
     }
-    if (configuration[STR_DISCORD][STR_ENABLED]){
-      if (!discord.sendFile(file)){
-        if (SERIAL_DEBUG) { Serial.println("Failed to send to Discord. Going to sleep"); }
-        goToSleep();
-      }
-    }
-    // Move the sent file to old pictures or deletedepending on config
-    if (configuration[STR_UPLOAD][STR_UPLOAD_KEEP_FILE_AFTER]) {
-      fs.rename("/new/" + String(file.name()), "/old/" + String(file.name()));
-    } else {
-      fs.remove("/new/" + String(file.name()));
-    }
+    file = newDir.openNextFile();
   }
-  file = newDir.openNextFile();
-}
   }
   buzzer.play(configuration[STR_MELODY][STR_UPLOAD_END]);
   vibration.play(configuration[STR_VIBRATION][STR_UPLOAD_END]);
@@ -622,19 +619,12 @@ void connectWifi() {
     wifiMulti.addAP(wifiAP[STR_SSID], wifiAP[STR_PASSWORD]);
   }
 
-  if (SERIAL_DEBUG) { Serial.println("Connecting Wifi..."); }
+  ESP_LOGI(TAG,"Connecting Wifi...");
   uint32_t connectTime = 0;
-  //while (WiFi.status() != WL_CONNECTED) {
   if (wifiMulti.run((configuration[STR_WIFI_TIMEOUT] | 4) * 1000) != WL_CONNECTED){
     goToSleep();
   }
-
-  if (SERIAL_DEBUG) {
-    Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
-  }
+  ESP_LOGI(TAG,"WiFi connected. IP address: %s", WiFi.localIP().toString());
 }
 
 void ensureFilestructure() {
@@ -648,18 +638,17 @@ void ensureFilestructure() {
 }
 
 boolean isNewlyBooted() {
-  return wakeup_reason != ESP_SLEEP_WAKEUP_EXT0 && wakeup_reason != ESP_SLEEP_WAKEUP_TIMER;
+  return wakeup_reason != ESP_SLEEP_WAKEUP_EXT0 && wakeup_reason != ESP_SLEEP_WAKEUP_EXT1 && wakeup_reason != ESP_SLEEP_WAKEUP_TIMER;
 }
 
 void goToSleep() {
-  if (SERIAL_DEBUG) { Serial.print("Going to sleep"); }
+  ESP_LOGI(TAG,"Going to sleep");
   // Finish indications
   while (isFeedbackPlaying()) {
     delay(5);
   }
 
-  digitalWrite(LED_GPIO_NUM, HIGH);
-  //digitalWrite(VIBRATION_PIN, LOW);
+  digitalWrite(PIN_LED, LOW);
   delay(200);
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
@@ -677,118 +666,12 @@ void goToSleep() {
     minutesToSleep = min(minutesToSleep, 120ULL); // Max 2 hours, known issue https://forum.arduino.cc/t/esp32-deep-sleep-is-24h-sleep-effectively-possible/677173/2
     esp_sleep_enable_timer_wakeup(minutesToSleep * S_TO_MIN_FACTOR * uS_TO_S_FACTOR);
   }
-  if (SERIAL_DEBUG) { Serial.println("Wifi off + wake set"); }
+  ESP_LOGI(TAG,"Wifi off + wake set");
 
-  /*gpio_reset_pin(GPIO_NUM_0);
-  gpio_reset_pin(GPIO_NUM_1);
-  gpio_reset_pin(GPIO_NUM_2);
-  gpio_reset_pin(GPIO_NUM_3);
-  gpio_reset_pin(GPIO_NUM_4);
-  gpio_reset_pin(GPIO_NUM_5);
-  gpio_reset_pin(GPIO_NUM_6);
-  gpio_reset_pin(GPIO_NUM_7);
-  gpio_reset_pin(GPIO_NUM_8);
-  gpio_reset_pin(GPIO_NUM_9);
-  gpio_reset_pin(GPIO_NUM_10);
-  gpio_reset_pin(GPIO_NUM_11);
-  gpio_reset_pin(GPIO_NUM_12);
-  gpio_reset_pin(GPIO_NUM_13);
-  gpio_reset_pin(GPIO_NUM_14);
-  gpio_reset_pin(GPIO_NUM_15);
-  gpio_reset_pin(GPIO_NUM_16);
-  gpio_reset_pin(GPIO_NUM_17);
-  gpio_reset_pin(GPIO_NUM_18);
-  //gpio_reset_pin(GPIO_NUM_19);
-  //gpio_reset_pin(GPIO_NUM_20);
-  gpio_reset_pin(GPIO_NUM_21);
-  //gpio_reset_pin(GPIO_NUM_22);
-  //gpio_reset_pin(GPIO_NUM_23);
-  //gpio_reset_pin(GPIO_NUM_24);
-  //gpio_reset_pin(GPIO_NUM_25);
-  gpio_reset_pin(GPIO_NUM_26);
-  gpio_reset_pin(GPIO_NUM_27);
-  gpio_reset_pin(GPIO_NUM_28);
-  gpio_reset_pin(GPIO_NUM_29);
-  gpio_reset_pin(GPIO_NUM_30);
-  gpio_reset_pin(GPIO_NUM_31);
-  gpio_reset_pin(GPIO_NUM_32);
-  gpio_reset_pin(GPIO_NUM_33);
-  gpio_reset_pin(GPIO_NUM_34);
-  gpio_reset_pin(GPIO_NUM_35);
-  gpio_reset_pin(GPIO_NUM_36);
-  gpio_reset_pin(GPIO_NUM_37);
-  gpio_reset_pin(GPIO_NUM_38);
-  gpio_reset_pin(GPIO_NUM_39);
-  gpio_reset_pin(GPIO_NUM_40);
-  gpio_reset_pin(GPIO_NUM_41);
-  gpio_reset_pin(GPIO_NUM_42);
-  gpio_reset_pin(GPIO_NUM_43);
-  gpio_reset_pin(GPIO_NUM_44);
-  gpio_reset_pin(GPIO_NUM_45);
-  gpio_reset_pin(GPIO_NUM_46);
-  gpio_reset_pin(GPIO_NUM_47);
-  gpio_reset_pin(GPIO_NUM_48);*/
-
-  /*gpio_reset_pin(PWDN_GPIO_NUM);
-  rtc_gpio_set_direction(PWDN_GPIO_NUM, RTC_GPIO_MODE_INPUT_OUTPUT);
-  rtc_gpio_pulldown_dis(PWDN_GPIO_NUM);
-  rtc_gpio_pullup_en(PWDN_GPIO_NUM);
-
-  gpio_reset_pin(WAKE_GPIO_NUM);
-  rtc_gpio_set_direction(WAKE_GPIO_NUM, RTC_GPIO_MODE_INPUT_OUTPUT);
-  rtc_gpio_pulldown_dis(WAKE_GPIO_NUM);
-  rtc_gpio_pullup_en(WAKE_GPIO_NUM);
-
-  gpio_reset_pin(VIBRATION_PIN);
-  rtc_gpio_set_direction(VIBRATION_PIN, RTC_GPIO_MODE_INPUT_OUTPUT);
-  rtc_gpio_pullup_dis(VIBRATION_PIN);
-  rtc_gpio_pulldown_en(VIBRATION_PIN);*/
-
-  /*gpio_reset_pin(PWDN_GPIO_NUM);
-  gpio_set_direction(PWDN_GPIO_NUM, GPIO_MODE_INPUT_OUTPUT);
-  gpio_set_pull_mode(PWDN_GPIO_NUM, GPIO_PULLUP_ONLY);
-  gpio_pulldown_dis(PWDN_GPIO_NUM);
-  gpio_pullup_en(PWDN_GPIO_NUM);
-  gpio_hold_en(PWDN_GPIO_NUM);
-
-  gpio_reset_pin(WAKE_GPIO_NUM);
-  gpio_set_direction(WAKE_GPIO_NUM, GPIO_MODE_INPUT_OUTPUT);
-  gpio_set_pull_mode(WAKE_GPIO_NUM, GPIO_PULLUP_ONLY);
-  gpio_pulldown_dis(WAKE_GPIO_NUM);
-  gpio_pullup_en(WAKE_GPIO_NUM);
-  gpio_hold_en(WAKE_GPIO_NUM);*/
-
-  /*gpio_set_direction(VIBRATION_PIN, GPIO_MODE_INPUT_OUTPUT);
-  gpio_set_pull_mode(VIBRATION_PIN, GPIO_PULLDOWN_ONLY);
-  gpio_pullup_dis(VIBRATION_PIN);
-  gpio_pulldown_en(VIBRATION_PIN);*/
-  //gpio_hold_en(VIBRATION_PIN);
-  //Serial.println("pins");
-
-  // Set pin voltages and hold for sleep
-  if (!SERIAL_DEBUG) {
-    pinMode(VIBRATION_PIN, OUTPUT);
-    digitalWrite(VIBRATION_PIN, LOW);  // Keep off for sleep
-    gpio_hold_en(VIBRATION_PIN);
-  }
-
-  pinMode(PWDN_GPIO_NUM, OUTPUT);  // Stong pullup
-  digitalWrite(PWDN_GPIO_NUM, HIGH);
-  gpio_hold_en(PWDN_GPIO_NUM);  // Will wake if not enabled
-
-  //pinMode(WAKE_GPIO_NUM, OUTPUT);
-  //digitalWrite(WAKE_GPIO_NUM, HIGH);
-  //gpio_hold_en(WAKE_GPIO_NUM); // Will wake if not enabled
-  gpio_deep_sleep_hold_en();  // Not tested, not supposed to work without
-
-  if (SERIAL_DEBUG) { Serial.println("hold"); }
-
-  esp_sleep_enable_ext0_wakeup(WAKE_GPIO_NUM, HIGH);  //We pull up the gpio and wait for it to be pulled down
+  esp_sleep_enable_ext1_wakeup_io(BUTTON_PIN_BITMASK(PIN_SHUTTER)|BUTTON_PIN_BITMASK(PIN_POWERED), ESP_EXT1_WAKEUP_ANY_HIGH);
+  //esp_sleep_enable_ext0_wakeup(PIN_SHUTTER, HIGH);
   esp_deep_sleep_disable_rom_logging(); // suppress boot messages -> https://esp32.com/viewtopic.php?t=30954
-  if (SERIAL_DEBUG) {
-    //gpio_dump_io_configuration(stdout, (1ULL << WAKE_GPIO_NUM) | (1ULL << PWDN_GPIO_NUM));
-    Serial.println(" now");
-  }
+  ESP_LOGI(TAG,"See you.");
   delay(50);
   esp_deep_sleep_start();
 }
@@ -799,23 +682,23 @@ void performUpdate(Stream &updateSource, size_t updateSize) {
   if (Update.begin(updateSize)) {
     size_t written = Update.writeStream(updateSource);
     if (written == updateSize) {
-      if (SERIAL_DEBUG) {Serial.println("Written : " + String(written) + " successfully");}
+      ESP_LOGI(TAG,"Written: %d successfully", written);
     } else {
-      if (SERIAL_DEBUG) {Serial.println("Written only : " + String(written) + "/" + String(updateSize) + ". Retry?");}
+      ESP_LOGE(TAG,"Written only : %d / %d. Retry?", written, updateSize);
     }
     if (Update.end()) {
-      if (SERIAL_DEBUG) {Serial.println("OTA done!");}
+      ESP_LOGI(TAG,"OTA done!");
       if (Update.isFinished()) {
-        if (SERIAL_DEBUG) {Serial.println("Update successfully completed. Rebooting.");}
+        ESP_LOGI(TAG,"Update successfully completed. Rebooting.");
       } else {
-        if (SERIAL_DEBUG) {Serial.println("Update not finished? Something went wrong!");}
+        ESP_LOGE(TAG,"Update not finished? Something went wrong!");
       }
     } else {
-      if (SERIAL_DEBUG) {Serial.println("Error Occurred. Error #: " + String(Update.getError()));}
+      ESP_LOGE(TAG,"Error Occurred. Error #: %d",Update.getError());
     }
 
   } else {
-    if (SERIAL_DEBUG) {Serial.println("Not enough space to begin OTA");}
+    ESP_LOGE(TAG,"Not enough space to begin OTA");
   }
 }
 
@@ -824,7 +707,7 @@ void updateFromFS(fs::FS &fs) {
   File updateBin = fs.open("/update.bin");
   if (updateBin) {
     if (updateBin.isDirectory()) {
-      if (SERIAL_DEBUG) {Serial.println("Error, update.bin is not a file");}
+      ESP_LOGE(TAG,"Error, update.bin is not a file");
       updateBin.close();
       return;
     }
@@ -832,10 +715,10 @@ void updateFromFS(fs::FS &fs) {
     size_t updateSize = updateBin.size();
 
     if (updateSize > 0) {
-      if (SERIAL_DEBUG) {Serial.println("Try to start update");}
+      ESP_LOGI(TAG,"Try to start update");
       performUpdate(updateBin, updateSize);
     } else {
-      if (SERIAL_DEBUG) {Serial.println("Error, file is empty");}
+      ESP_LOGE(TAG,"Error, file is empty");
     }
 
     updateBin.close();
@@ -843,7 +726,7 @@ void updateFromFS(fs::FS &fs) {
     // when finished remove the binary from sd card to indicate end of the process
     fs.remove("/update.bin");
   } else {
-    if (SERIAL_DEBUG) {Serial.println("Could not load update.bin from sd root");}
+    ESP_LOGE(TAG,"Could not load update.bin from sd root");
   }
 }
 

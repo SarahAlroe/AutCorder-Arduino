@@ -2,11 +2,10 @@
 #include "esp_camera.h"
 #include "FS.h"
 #include "SD_MMC.h"
-#include "driver/gpio.h"
 #include "Camera.h"
 #include "time.h"
 
-extern bool SERIAL_DEBUG;
+static const char* TAG = "Camera";
 
 Camera::Camera() {
 }
@@ -14,45 +13,49 @@ Camera::Camera() {
 bool Camera::begin() {
   // Init the camera
   camera_config_t config;
-  config.ledc_channel = LEDC_CHANNEL_0;
-  config.ledc_timer = LEDC_TIMER_0;
-  config.pin_d0 = Y2_GPIO_NUM;
-  config.pin_d1 = Y3_GPIO_NUM;
-  config.pin_d2 = Y4_GPIO_NUM;
-  config.pin_d3 = Y5_GPIO_NUM;
-  config.pin_d4 = Y6_GPIO_NUM;
-  config.pin_d5 = Y7_GPIO_NUM;
-  config.pin_d6 = Y8_GPIO_NUM;
-  config.pin_d7 = Y9_GPIO_NUM;
-  config.pin_xclk = XCLK_GPIO_NUM;
-  config.pin_pclk = PCLK_GPIO_NUM;
-  config.pin_vsync = VSYNC_GPIO_NUM;
-  config.pin_href = HREF_GPIO_NUM;
-  config.pin_sscb_sda = SIOD_GPIO_NUM;
-  config.pin_sscb_scl = SIOC_GPIO_NUM;
-  config.pin_pwdn = PWDN_GPIO_NUM;
-  config.pin_reset = RESET_GPIO_NUM;
+  config.pin_d0 = PIN_CAM_Y2;
+  config.pin_d1 = PIN_CAM_Y3;
+  config.pin_d2 = PIN_CAM_Y4;
+  config.pin_d3 = PIN_CAM_Y5;
+  config.pin_d4 = PIN_CAM_Y6;
+  config.pin_d5 = PIN_CAM_Y7;
+  config.pin_d6 = PIN_CAM_Y8;
+  config.pin_d7 = PIN_CAM_Y9;
+  config.pin_xclk = PIN_CAM_XVCLK;
+  config.pin_pclk = PIN_CAM_PCLK;
+  config.pin_vsync = PIN_CAM_VSYNC;
+  config.pin_href = PIN_CAM_HREF;
+  config.pin_sccb_sda = PIN_CAM_SIO_D;
+  config.pin_sccb_scl = PIN_CAM_SIO_C;
+  config.pin_reset = PIN_CAM_RESET;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   config.fb_location = CAMERA_FB_IN_PSRAM;
 
   if (psramFound()) {
+    ESP_LOGI(TAG,"PSRAM Found");
     config.frame_size = FRAMESIZE_UXGA;  // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
     config.jpeg_quality = 10;
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
   } else {
+    ESP_LOGI(TAG,"No PSRAM Found");
     config.frame_size = FRAMESIZE_SVGA;
     config.jpeg_quality = 12;
     config.fb_count = 1;
+    config.fb_location = CAMERA_FB_IN_DRAM;
   }
 
-  if (SERIAL_DEBUG) { Serial.println("Init'ed camera"); }
   esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    if (SERIAL_DEBUG) { Serial.printf("Camera init failed with error 0x%x", err); }
+  delay(400);
+  if (err == ESP_OK) {
+    ESP_LOGI(TAG,"Initialized camera");
+  }else{
+    ESP_LOGE(TAG,"Camera init failed with error 0x%x", err);
+    delay(400);
     return false;
   }
+  delay(400);
 
   sensor_t *s = esp_camera_sensor_get();
   s->set_brightness(s, 0);  // -2 to 2
@@ -78,8 +81,6 @@ bool Camera::begin() {
   s->set_dcw(s, 0);  // 0 = disable , 1 = enable
   //s->set_colorbar(s, 0);       // 0 = disable , 1 = enable
 
-  if (SERIAL_DEBUG) { Serial.println("Taking picture"); }
-
   fb = NULL;
   return true;
 }
@@ -87,25 +88,26 @@ bool Camera::begin() {
 void Camera::warmup() {
   // Warm up the camera. Appears to take out some of the noise.
   // OLD did this 8 times, 10ms delay
-  fb = esp_camera_fb_get();
-  esp_camera_fb_return(fb);
+  //fb = esp_camera_fb_get();
+  //esp_camera_fb_return(fb);
   warmupCount ++;
 }
 
 bool Camera::takePicture() {
   // Take Picture with Camera
+  ESP_LOGI(TAG,"Taking picture");
   while(warmupCount < 8){
     warmup();
   }
   fb = esp_camera_fb_get();
   if (!fb) {
-    if (SERIAL_DEBUG) { Serial.println("Camera capture failed"); }
+    ESP_LOGE(TAG,"Camera capture failed");
     return false;
   }
   return true;
 }
   
-bool Camera::savePicture(String filePrefix, uint8_t rotation) {
+bool Camera::savePicture(fs::FS &fs, String filePrefix, uint8_t rotation) {
   // Save the image
   struct tm timeinfo;
   getLocalTime(&timeinfo);
@@ -116,12 +118,11 @@ bool Camera::savePicture(String filePrefix, uint8_t rotation) {
   String minute = (timeinfo.tm_min<10?"0":"") + String(timeinfo.tm_min);
   String second = (timeinfo.tm_sec<10?"0":"") + String(timeinfo.tm_sec);
   String path = "/new/" + filePrefix + hour + "-" + minute + "-" + second + ".jpg";
-  if (SERIAL_DEBUG) { Serial.printf("Picture file name: %s\n", path.c_str()); }
+  ESP_LOGI(TAG,"Picture file name: %s", path.c_str());
 
-  fs::FS &fs = SD_MMC;
   File file = fs.open(path.c_str(), FILE_WRITE);
   if (!file) {
-    if (SERIAL_DEBUG) { Serial.println("Failed to open file in writing mode"); }
+    ESP_LOGE(TAG,"Failed to open file in writing mode");
     return false;
   }
   const byte orientationFlag[] = {1,8,3,6};
@@ -145,7 +146,7 @@ bool Camera::savePicture(String filePrefix, uint8_t rotation) {
   jpegHeader[49] = orientationFlag[rotation];
   file.write(jpegHeader, 0x78);           // Jpeg header with orientation property set //TODO extract to confi
   file.write(fb->buf + 0x14, fb->len - 0x14);  // payload (image), payload length
-  if (SERIAL_DEBUG) { Serial.printf("Saved file to path: %s\n", path.c_str()); }
+  ESP_LOGI(TAG,"Saved file to path: %s", path.c_str());
   file.close();
   return true;
 }
@@ -155,7 +156,4 @@ void Camera::stop(){
   esp_camera_fb_return(fb);
   esp_camera_return_all();
   esp_camera_deinit();
-
-  gpio_pulldown_dis(PWDN_GPIO_NUM);
-  gpio_pullup_en(PWDN_GPIO_NUM);
 }

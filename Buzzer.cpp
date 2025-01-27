@@ -4,7 +4,7 @@
 #include "SD_MMC.h"
 #include <ArduinoJson.h>
 
-extern bool SERIAL_DEBUG;
+static const char* TAG = "Buzzer";
 
 Buzzer::Buzzer(gpio_num_t pin) {
   this->pin = pin;
@@ -15,10 +15,7 @@ void Buzzer::play(String filename) {
   if (!filename || filename == "") {
     return;
   }
-  if (SERIAL_DEBUG) {
-    Serial.print("Playing: ");
-    Serial.println(filename);
-  }
+  ESP_LOGI(TAG,"Playing: %s", filename);
   isMelodyPlaying = true;
   noteIndex = 0;
   noteCount = 0;
@@ -31,11 +28,7 @@ void Buzzer::play(String filename) {
   melody = (struct note *)malloc(sizeof(melody) * noteCount);
   melodyFile.read((byte *) melody, sizeof(note) * noteCount);
   melodyFile.close();
-  if (!SERIAL_DEBUG) {
-    //pinMode(pin, OUTPUT);
-    //gpio_reset_pin(pin);
-    ledcAttach(pin, freq, resolution);
-  }
+  ledcAttach(pin, freq, resolution);
   this->tick();
 }
 
@@ -45,19 +38,8 @@ void Buzzer::tick() {
       this->stop();
       return;
     }
-    if (!SERIAL_DEBUG) {
-      ledcWriteTone(pin, melody[noteIndex].frequency);
-      /*if (melody[noteIndex].frequency !=0){
-      tone(pin, melody[noteIndex].frequency, melody[noteIndex].duration);
-    }else{
-      noTone(pin);
-    }*/
-    } else {
-      Serial.print("Tone: ");
-      Serial.print(melody[noteIndex].frequency);
-      Serial.print(", Duration: ");
-      Serial.println(melody[noteIndex].duration);
-    }
+    ledcWriteTone(pin, melody[noteIndex].frequency);
+    ESP_LOGI(TAG,"Tone: %d Hz, Duration: %d ms", melody[noteIndex].frequency, melody[noteIndex].duration);
     nextToneAt = millis() + melody[noteIndex].duration;
     noteIndex++;
   }
@@ -69,12 +51,9 @@ boolean Buzzer::isPlaying() {
 }
 
 void Buzzer::stop() {
-  if (!SERIAL_DEBUG) {
-    //noTone(pin);
-    ledcWriteTone(pin, 0);
-    ledcDetach(pin);
-    gpio_reset_pin(pin);
-  }
+  ledcWriteTone(pin, 0);
+  ledcDetach(pin);
+  gpio_reset_pin(pin);
   free(melody); melody = NULL;
   isMelodyPlaying = false;
 }

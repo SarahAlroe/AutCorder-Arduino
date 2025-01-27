@@ -3,7 +3,7 @@
 #include "FS.h"
 #include "SD_MMC.h"
 
-extern bool SERIAL_DEBUG;
+static const char* TAG = "PWMPlayer";
 
 PWMPlayer::PWMPlayer(gpio_num_t pin, bool inverted) {
   this->pin = pin;
@@ -22,7 +22,7 @@ void PWMPlayer::play(String filename) {
   fs::FS &fs = SD_MMC;
   File patternFile = fs.open(filename);
   if (!patternFile) {
-    if (SERIAL_DEBUG) { Serial.print("File not found"); }
+    ESP_LOGW(TAG, "File not found");
     return;
   }
   patternFile.read((uint8_t *)&segmentCount, sizeof segmentCount);
@@ -31,18 +31,10 @@ void PWMPlayer::play(String filename) {
   pwmPattern = (struct patternSegment *)malloc(sizeof(patternSegment) * segmentCount);
   patternFile.read((uint8_t *)pwmPattern, sizeof(patternSegment) * segmentCount);
   patternFile.close();
-  if (!SERIAL_DEBUG) {
-    gpio_reset_pin(pin);
-    //gpio_set_direction(pin, GPIO_MODE_OUTPUT);
-    ledcAttach(pin, freq, resolution);
-  } else {
-    Serial.print("Playing: ");
-    Serial.println(filename);
-    Serial.print("Segments: ");
-    Serial.println(segmentCount);
-    Serial.print("Segment size: ");
-    Serial.println(sizeof(segmentCount));
-  }
+  gpio_reset_pin(pin);
+  //gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+  ledcAttach(pin, freq, resolution);
+  ESP_LOGI(TAG, "Playing: %s, Segments: %d, Segment size: %d", filename, segmentCount, sizeof(segmentCount));
   this->tick();
 }
 
@@ -52,22 +44,14 @@ void PWMPlayer::tick() {
       this->stop();
       return;
     }
-    if (!SERIAL_DEBUG) {
-      uint8_t startIntensity = pwmPattern[segmentIndex].startIntensity;
-      uint8_t endIntensity = pwmPattern[segmentIndex].endIntensity;
-      if (isInverted) {
-        startIntensity = 255 - startIntensity;
-        endIntensity = 255 - endIntensity;
-      }
-      ledcFade(pin, startIntensity, endIntensity, pwmPattern[segmentIndex].duration);
-    } else {
-      Serial.print("Pattern start: ");
-      Serial.print(pwmPattern[segmentIndex].startIntensity);
-      Serial.print(" End: ");
-      Serial.print(pwmPattern[segmentIndex].endIntensity);
-      Serial.print(" Duration: ");
-      Serial.println(pwmPattern[segmentIndex].duration);
+    uint8_t startIntensity = pwmPattern[segmentIndex].startIntensity;
+    uint8_t endIntensity = pwmPattern[segmentIndex].endIntensity;
+    if (isInverted) {
+      startIntensity = 255 - startIntensity;
+      endIntensity = 255 - endIntensity;
     }
+    ledcFade(pin, startIntensity, endIntensity, pwmPattern[segmentIndex].duration);
+    ESP_LOGI(TAG, "Pattern start: %d, End: %d, Duration: %d", pwmPattern[segmentIndex].startIntensity, pwmPattern[segmentIndex].endIntensity, pwmPattern[segmentIndex].duration);
     nextSegmentAt = millis() + pwmPattern[segmentIndex].duration;
     segmentIndex++;
   }
@@ -81,18 +65,15 @@ boolean PWMPlayer::isPlaying() {
 void PWMPlayer::stop() {
   free(pwmPattern);
   pwmPattern = NULL;
-  if (!SERIAL_DEBUG) {
-    ledcWrite(pin, 0);
-    ledcDetach(pin);
-    gpio_reset_pin(pin);
-    pinMode(pin, OUTPUT);
-    if (isInverted) {
-      digitalWrite(pin, HIGH);
-    } else {
-      digitalWrite(pin, LOW);
-    }
+  ledcWrite(pin, 0);
+  ledcDetach(pin);
+  gpio_reset_pin(pin);
+  pinMode(pin, OUTPUT);
+  if (isInverted) {
+    digitalWrite(pin, HIGH);
   } else {
-    Serial.println("Stopping play");
+    digitalWrite(pin, LOW);
   }
+  ESP_LOGI(TAG, "Stopping play");
   isPatternPlaying = false;
 }

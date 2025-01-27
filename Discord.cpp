@@ -2,12 +2,13 @@
 #include "Discord.h"
 #include <NetworkClientSecure.h>
 
-extern bool SERIAL_DEBUG;
+static const char* TAG = "Discord";
 
 Discord::Discord() {
 }
 
 void Discord::init(String id, String token, String botName) {
+  ESP_LOGI(TAG, "Initialising Discord bot %s", botName);
   this->id = id;
   this->token = token;
   this->name = botName;
@@ -71,18 +72,18 @@ bool Discord::sendFile(File fileToSend){
     unsigned long timeout = millis();
     while(pclient.available() == 0){
       if(millis() - timeout > 5000){
-        if (SERIAL_DEBUG) {Serial.println(">>> Client Timeout !");}
+        ESP_LOGW(TAG, "Client Timeout !");
         pclient.stop();
         return false;
       }
     }
     String firstLine = pclient.readStringUntil('\r');
-    if (SERIAL_DEBUG) {Serial.print(firstLine);}
+    ESP_LOGI(TAG, "< %s", firstLine);
     firstLine = firstLine.substring(firstLine.indexOf(" ")+1, firstLine.indexOf(" ")+4); // Take the 3 character responsecode right after first space.
     bool got200Code = firstLine.toInt() < 300;
     while(pclient.available()) {
       String line = pclient.readStringUntil('\r');
-      if (SERIAL_DEBUG) {Serial.print(line);}
+      ESP_LOGI(TAG, "< %s", line);
     }
     pclient.stop();
     return got200Code;
