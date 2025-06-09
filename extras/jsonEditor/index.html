@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>AutCorder config editor</title>
+    <script src="https://cdn.jsdelivr.net/npm/@json-editor/json-editor@latest/dist/jsoneditor.min.js"></script>
+    <link rel="stylesheet" id="theme-link" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
+    <link rel="stylesheet" id="iconlib-link" href="https://use.fontawesome.com/releases/v5.6.1/css/all.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>AutCorder config editor</h1>
+        <div class="row">
+            <div class="col-xs-12 col-md-6">
+                <div class='json-editor-container'></div>
+            </div>
+            <div class="col-xs-12 col-md-6">
+                Load file: <input type="file" name="load" id="load"><br>
+                <label class="sr-only" for="value">Value</label>
+                <textarea class="form-control" id="value" rows="12"
+                    style="font-size: 12px; font-family: monospace;"></textarea><br>
+                <button id='save' class="btn btn-primary">Save</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // Initialize the editor with a JSON schema
+        var editor = new JSONEditor(document.querySelector('.json-editor-container'), {
+            schema: {
+                "title": "AutCorder",
+                "type": "object",
+                "properties": {
+                    "wifi": {
+                        "type": "array",
+                        "title": "Wifi networks",
+                        "description": "Wifi networks to connect to",
+                        "format": "table",
+                        "maxItems": 5,
+                        "items": {
+                            "type": "object",
+                            "title": "Network",
+                            "properties": {
+                                "ssid": {
+                                    "title": "SSID",
+                                    "type": "string"
+                                },
+                                "pass": {
+                                    "title": "Password",
+                                    "type": "string",
+                                    "minLength": 8
+                                }
+                            },
+                            "required": [
+                                "ssid",
+                                "pass"
+                            ]
+                        }
+                    },
+                    "telegram": {
+                        "type": "object",
+                        "title": "Telegram",
+                        "description": "Connect Telegram over WIFI",
+                        "required": [
+                            "enabled",
+                            "chat_id",
+                            "token"
+                        ],
+                        "properties": {
+                            "enabled": {
+                                "title": "Enabled",
+                                "type": "boolean",
+                                "default": "false"
+                            },
+                            "chat_id": {
+                                "title": "Chat IDs",
+                                "description": "List of Unique IDs of which accounts and group chats to send to",
+                                "type": "array",
+                                "format": "table",
+                                "maxItems": 3,
+                                "items": {
+                                    "type": "integer",
+                                    "title": "ID"
+                                }
+                            },
+                            "token": {
+                                "title": "Token",
+                                "type": "string",
+                                "default": ""
+                            }
+                        },
+                        "if": {
+                            "properties": {
+                                "enabled": {
+                                    "const": false
+                                }
+                            }
+                        },
+                        "then": {
+                            "properties": {
+                                "chat_id": {
+                                    "readOnly": "true"
+                                },
+                                "token": {
+                                    "readOnly": "true"
+                                }
+                            }
+                        }
+                    },
+                    "discord": {
+                        "type": "object",
+                        "title": "Discord",
+                        "description": "Connect to a Discord server over WIFI",
+                        "required": [
+                            "enabled",
+                            "chat_id",
+                            "token",
+                            "name"
+                        ],
+                        "properties": {
+                            "enabled": {
+                                "title": "Enabled",
+                                "type": "boolean",
+                                "default": "false"
+                            },
+                            "chat_id": {
+                                "title": "Chat IDs",
+                                "description": "Server ID to send messages",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "token": {
+                                "title": "Token",
+                                "description": "Webhook Token to use",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "name": {
+                                "title": "Name",
+                                "description": "Name of bot to send as",
+                                "type": "string",
+                                "default": "AutCorder"
+                            }
+                        },
+                        "if": {
+                            "properties": {
+                                "enabled": {
+                                    "const": false
+                                }
+                            }
+                        },
+                        "then": {
+                            "properties": {
+                                "chat_id": {
+                                    "readOnly": "true"
+                                },
+                                "token": {
+                                    "readOnly": "true"
+                                },
+                                "name": {
+                                    "readOnly": "true"
+                                }
+                            }
+                        }
+                    },
+                    "whisper": {
+                        "type": "object",
+                        "title": "Whisper",
+                        "description": "Transcribe audio recordings",
+                        "required": [
+                            "enabled",
+                            "domain",
+                            "path",
+                            "lang",
+                            "token",
+                        ],
+                        "properties": {
+                            "enabled": {
+                                "title": "Enabled",
+                                "type": "boolean",
+                                "default": "false"
+                            },
+                            "domain": {
+                                "title": "Server name",
+                                "description": "Server domain for whisper API",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "path": {
+                                "title": "Server path",
+                                "description": "Server path for whisper API",
+                                "type": "string",
+                                "default": "/v1/audio/transcriptions"
+                            },
+                            "lang": {
+                                "title": "Language",
+                                "description": "Language of transcription. Leave blank if unsure.",
+                                "type": "string",
+                                "enum":["","da","en","zh","de","es","ru","ko","fr","ja","pt","tr","pl","ca","nl","ar","sv","it","id","hi","fi","vi","he","uk","el","ms","cs","ro","hu","ta","no","th","ur","hr","bg","lt","la","mi","ml","cy","sk","te","fa","lv","bn","sr","az","sl","kn","et","mk","br","eu","is","hy","ne","mn","bs","kk","sq","sw","gl","mr","pa","si","km","sn","yo","so","af","oc","ka","be","tg","sd","gu","am","yi","lo","uz","fo","ht","ps","tk","nn","mt","sa","lb","my","bo","tl","mg","as","tt","haw","ln","ha","ba","jw","su","yue"],
+                                "default": ""
+                            },
+                            "token": {
+                                "title": "Token",
+                                "description": "Webhook Token to use",
+                                "type": "string",
+                                "default": ""
+                            }
+                        },
+                        "if": {
+                            "properties": {
+                                "enabled": {
+                                    "const": false
+                                }
+                            }
+                        },
+                        "then": {
+                            "properties": {
+                                "domain": {
+                                    "readOnly": "true"
+                                },"path": {
+                                    "readOnly": "true"
+                                },"lang": {
+                                    "readOnly": "true"
+                                },
+                                "token": {
+                                    "readOnly": "true"
+                                }
+                            }
+                        }
+                    },
+                    "wifi_timeout": {
+                        "title": "Wifi connection timeout",
+                        "description": "Amount of seconds to look for wifi before giving up",
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "default": 4
+                    },
+                    "alt_func_delay": {
+                        "title": "Delay before engaging secondary function",
+                        "description": "When to switch from taking a picture to recording audio in ms",
+                        "type": "integer",
+                        "inclusiveMinimum": 0,
+                        "default": 400
+                    },
+                    "battery": {
+                        "title": "Battery",
+                        "type": "object",
+                        "properties": {
+                            "warn_delay": {
+                                "title": "Battery Low Warning Delay",
+                                "description": "Hours between warning of low battery",
+                                "type": "integer",
+                                "inclusiveMinimum": 1,
+                                "default": 24
+                            },
+                            "warn_pct": {
+                                "title": "Battery Low at Percentage",
+                                "description": "Battery percentage at which warnings will begin",
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "inclusiveMaximum": 100,
+                                "default": 20
+                            }
+                        }
+                    },
+                    "picture_rotation": {
+                        "title": "JPEG Picture orientation property",
+                        "description": "EXIF orientation value to apply to camera. See: https://jdhao.github.io/2019/07/31/image_rotation_exif_info/",
+                        "type": "integer",
+                        "inclusiveMinimum": 1,
+                        "inclusiveMaximum": 9,
+                        "default": 3
+                    },
+                    "audio_limiter_factor": {
+                        "title": "Audio limiter factor",
+                        "description": "Factor to apply audio limiter, higher is stronger.",
+                        "type": "number",
+                        "inclusiveMinimum": 0,
+                        "inclusiveMaximum": 2,
+                        "default": 0.75
+                    },
+                    "collect_statistics": {
+                        "title": "Collect statistics",
+                        "description": "Should statistics of camera use be saved to the SD card?",
+                        "type": "boolean",
+                        "default": "true"
+                    },
+                    "upload": {
+                        "title": "Recording upload rules",
+                        "type": "object",
+                        "properties": {
+                            "immediate_delay_min": {
+                                "title": "Immediate delay",
+                                "description": "Immediate delay between making a recording, and trying to upload it in minutes",
+                                "type": "integer",
+                                "default": 1
+                            },
+                            "retry_delay_min": {
+                                "title": "Retry delay",
+                                "description": "Delay before retrying upload in minutes",
+                                "type": "integer",
+                                "default": 30
+                            },
+                            "allowed_from": {
+                                "title": "Allow uploading from",
+                                "description": "From which time of day can uploads happen?",
+                                "type": "object",
+                                "properties": {
+                                    "hour": {
+                                        "title": "Hour",
+                                        "type": "integer",
+                                        "inclusiveMin": 0,
+                                        "exclusiveMax": 24,
+                                        "default": 6
+                                    },
+                                    "min": {
+                                        "title": "Minute",
+                                        "type": "integer",
+                                        "inclusiveMin": 0,
+                                        "exclusiveMax": 60,
+                                        "default": 30
+                                    }
+                                }
+                            },
+                            "allowed_to": {
+                                "title": "Allow uploading until",
+                                "description": "Until which time of day can uploads happen?",
+                                "type": "object",
+                                "properties": {
+                                    "hour": {
+                                        "title": "Hour",
+                                        "type": "integer",
+                                        "inclusiveMin": 0,
+                                        "exclusiveMax": 24,
+                                        "default": 23
+                                    },
+                                    "min": {
+                                        "title": "Minute",
+                                        "type": "integer",
+                                        "inclusiveMin": 0,
+                                        "exclusiveMax": 60,
+                                        "default": 30
+                                    }
+                                }
+                            },
+                            "keep_file_after_upl": {
+                                "title": "Keep recordings after upload",
+                                "description": "Files will saved to the /old/ folder on the SD card.",
+                                "type": "boolean",
+                                "default": false
+                            }
+                        },
+                        "required": [
+                            "immediate_delay_min",
+                            "retry_delay_min",
+                            "allowed_from",
+                            "allowed_to",
+                            "keep_file_after_upl"
+                        ]
+                    },
+                    "feedback": {
+                        "title": "Feedback",
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "title": "Feedback type",
+                                "type": "string",
+                                "enum": [
+                                    "melody",
+                                    "vibration"
+                                ],
+                                "default": "vibration"
+                            },
+                            "pho_end": {
+                                "title": "Photo Taken",
+                                "description": "Path to feedback pattern to play when a photo has been taken",
+                                "type": "string",
+                                "example": "/doublebuzz.vib",
+                                "default": ""
+                            },
+                            "aud_end": {
+                                "title": "Audio recorded",
+                                "description": "Path to feedback pattern to play when an audio recording has been made",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "upl_end": {
+                                "title": "Upload done",
+                                "description": "Path to feedback pattern to play when a recording has been uploaded",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "activity": {
+                                "title": "General activity",
+                                "description": "Path to feedback pattern to play when the AutCorder is active",
+                                "type": "string",
+                                "default": ""
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "pho_end",
+                            "aud_end",
+                            "upl_end",
+                            "activity"
+                        ]
+                    },
+                    "led": {
+                        "title": "LED feedback",
+                        "type": "object",
+                        "properties": {
+                            "pho_end": {
+                                "title": "Photo Taken",
+                                "description": "Path to LED pattern to show when a photo has been taken",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "aud_end": {
+                                "title": "Audio recorded",
+                                "description": "Path to LED pattern to show when an audio recording has been made",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "upl_end": {
+                                "title": "Upload done",
+                                "description": "Path to LED pattern to show when a recording has been uploaded",
+                                "type": "string",
+                                "default": ""
+                            },
+                            "activity": {
+                                "title": "General activity",
+                                "description": "Path to LED pattern to show when the AutCorder is active",
+                                "type": "string",
+                                "example": "/fastFade.vib",
+                                "default": ""
+                            }
+                        },
+                        "required": [
+                            "pho_end",
+                            "aud_end",
+                            "upl_end",
+                            "activity"
+                        ]
+                    },
+                    "util": {
+                        "title": "Utility port",
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "title": "Function",
+                                "description": "What function should the utility port serve?",
+                                "type": "string",
+                                "enum": [
+                                    "disabled",
+                                    "binary"
+                                ]
+                            },
+                            "on_text": {
+                                "title": "Switch On text",
+                                "type": "string",
+                                "default": "👍 "
+                            },
+                            "off_text": {
+                                "title": "Switch Off text",
+                                "type": "string",
+                                "default": "👎 "
+                            },
+                            "inverted": {
+                                "title": "Inverted",
+                                "type": "boolean"
+                            }
+                        },
+                        "if": {
+                            "properties": {
+                                "type": {
+                                    "const": "disabled"
+                                }
+                            }
+                        },
+                        "then": {
+                            "properties": {
+                                "on_text": {
+                                    "readOnly": "true"
+                                },
+                                "off_text": {
+                                    "readOnly": "true"
+                                },
+                                "inverted": {
+                                    "readOnly": "true"
+                                }
+                            }
+                        },
+                        "required": [
+                            "type",
+                            "on_text",
+                            "off_text",
+                            "inverted"
+                        ]
+                    }
+                },
+                "required": [
+                    "wifi",
+                    "telegram",
+                    "discord",
+                    "whisper",
+                    "wifi_timeout",
+                    "picture_rotation",
+                    "audio_limiter_factor",
+                    "collect_statistics",
+                    "upload",
+                    "feedback",
+                    "led",
+                    "util"
+                ]
+            },
+            disable_array_reorder: true,
+            disable_collapse: true,
+            disable_edit_json: true,
+            disable_properties: true,
+            required_by_default: true,
+            use_default_values: true,
+            theme: 'bootstrap4',
+            iconlib: 'fontawesome5',
+        });
+
+        editor.on('change', () => {
+            document.querySelector("#value").value = JSON.stringify(editor.getValue(), null, 2);
+        })
+
+        document.getElementById('load')
+            .addEventListener('change', function () {
+                let fr = new FileReader();
+                fr.onload = function () {
+                    editor.setValue(JSON.parse(fr.result));
+                }
+                fr.readAsText(this.files[0]);
+            })
+
+        // Hook up the submit button to log to the console
+        document.getElementById('save').addEventListener('click', function () {
+            const blob = new Blob([JSON.stringify(editor.getValue())], {
+                type: 'application/json'
+            })
+            const url = window.URL.createObjectURL(blob);
+            downloadURL(url, "config.json");
+            setTimeout(() => window.URL.revokeObjectURL(url), 1000)
+        });
+
+        const downloadURL = (data, fileName) => {
+            const a = document.createElement('a')
+            a.href = data
+            a.download = fileName
+            document.body.appendChild(a)
+            a.style.display = 'none'
+            a.click()
+            a.remove()
+        }
+    </script>
+</body>
+
+</html>

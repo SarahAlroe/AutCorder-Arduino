@@ -21,22 +21,22 @@ bool Dictaphone::begin() {
 }
 
 void Dictaphone::warmup(){
-  for(int i=0; i<150; i++){ // Read out a number of samples to make more or less equivalent with camera
+  ESP_LOGI(TAG,"Warming up mic");
+  for(int i=0; i<200; i++){ // Read out a number of samples to make more or less equivalent with camera
     i2s.read();
   }
 }
 
 
 void Dictaphone::beginRecording(){
-  beginRecording(SAVED_SAMPLE_INTERVAL,SAVED_BIT_DEPTH_DIVIDE);
-}
-
-void Dictaphone::beginRecording(int16_t sampleInterval, bool halveBitDepth){
-  SAVED_SAMPLE_INTERVAL = sampleInterval; // Downsampling multiplier. Keep every nth sample. 1=Keep all, 2=Keep every other.
-  SAVED_BIT_DEPTH_DIVIDE = halveBitDepth;
+  ESP_LOGI(TAG,"Beginning mic recording");
   free(wavBuffer); wavBuffer = NULL; // For safety free wavBuffer if not already done
   //Reserve large psram buffer (Always guaranteed to be clear, no memory management issues, slow rw fine as limited processing)
+  
+  ESP_LOGI(TAG ,"Used PSRAM: %lu", ESP.getPsramSize() - ESP.getFreePsram());  
   wavBuffer = (uint8_t *)ps_malloc(RECORD_MAX_SIZE);
+  ESP_LOGI(TAG,"Used PSRAM after allocation: %lu", ESP.getPsramSize() - ESP.getFreePsram());
+  ESP_LOGI(TAG,"Buffer allocated at %p", wavBuffer);
   recordingLength = 0;
 }
 
@@ -51,7 +51,7 @@ void Dictaphone::processRecording(float limiterFactor){
   recordingLength = recordingLength - (DISCARD_START + DISCARD_END);  // Chop off the last bit to avoid the click (+100 ms for the first bit)
   // Get min and max of samples to offset and multiply without clipping.
   int16_t *clipSamples = (int16_t *)(wavBuffer + DISCARD_START); // Chop off the first 100ms
-  int8_t *clipSamples8 = (int8_t *)(wavBuffer + DISCARD_START);
+  uint8_t *clipSamples8 = (uint8_t *)(wavBuffer + DISCARD_START);
   int32_t minSample = INT16_MAX; //32 Bit to avoid accidental over or underflows.
   int32_t maxSample = INT16_MIN;
   int64_t averageSample = 0;
@@ -60,8 +60,8 @@ void Dictaphone::processRecording(float limiterFactor){
     maxSample = max(maxSample, (int32_t)clipSamples[i]);
     averageSample += clipSamples[i];
   }
-  ESP_LOGI(TAG,"Actual sample minimum: %d", minSample);
-  ESP_LOGI(TAG,"Actual sample maximum: %d", maxSample);
+  ESP_LOGI(TAG,"Actual sample minimum: %ld", minSample);
+  ESP_LOGI(TAG,"Actual sample maximum: %ld", maxSample);
   averageSample = averageSample / ((int64_t)recordingLength / (2 * SAVED_SAMPLE_INTERVAL)); // *2 because 16 bits
   // Offset minimum and maximum samples by the average sample value to avoid clipping when offsetting and amplifying samples later
   minSample = minSample - averageSample;
@@ -70,9 +70,9 @@ void Dictaphone::processRecording(float limiterFactor){
   sampleMult = max(sampleMult - 1, 1); // Subtract 1, but always keept at 1+ to avoid overflows.
 
   // Report statistics
-  ESP_LOGI(TAG,"Sample average: %d", averageSample);
-  ESP_LOGI(TAG,"Subtracted sample minimum: %d", minSample);
-  ESP_LOGI(TAG,"Subtracted sample maximum: %d", maxSample);
+  ESP_LOGI(TAG,"Sample average: %lld", averageSample);
+  ESP_LOGI(TAG,"Subtracted sample minimum: %ld", minSample);
+  ESP_LOGI(TAG,"Subtracted sample maximum: %ld", maxSample);
   ESP_LOGI(TAG,"Sample multiplier: %d", sampleMult);
 
   if (limiterFactor != 0.0) {
@@ -81,7 +81,7 @@ void Dictaphone::processRecording(float limiterFactor){
       // sampleIntermediary = sampleIntermediary * (1 - limiterFactor * sqrt(abs(sampleIntermediary))) / (1 - limiterFactor);  // Apply compression
       sampleIntermediary = sampleIntermediary / (sqrt(abs(sampleIntermediary)));  // Apply compression
       if (SAVED_BIT_DEPTH_DIVIDE){
-        clipSamples8[i/SAVED_SAMPLE_INTERVAL] = (int8_t)(sampleIntermediary * (float)INT8_MAX); // Return to int domain. Save in sequence of bytes + handle skips
+        clipSamples8[i/SAVED_SAMPLE_INTERVAL] = (uint8_t)((sampleIntermediary+0.5) * (float)UINT8_MAX); // Return to (u)int domain (for 8 bit). Save in sequence of bytes + handle skips
       }else{
         clipSamples[i/SAVED_SAMPLE_INTERVAL] = (int16_t)(sampleIntermediary * (float)INT16_MAX);// Return to int domain. Save in sequence of 16bit, no matter skips
       }
@@ -90,7 +90,7 @@ void Dictaphone::processRecording(float limiterFactor){
     for (int i = 0; i < recordingLength / 2; i += SAVED_SAMPLE_INTERVAL) { // Iterate over sample set in 16 bit, potentially every other sample
       int16_t normalizedSample = (clipSamples[i] - averageSample) * sampleMult; 
       if (SAVED_BIT_DEPTH_DIVIDE){
-        clipSamples8[i/SAVED_SAMPLE_INTERVAL] = normalizedSample / 256; // Save in sequence of bytes + handle skips
+        clipSamples8[i/SAVED_SAMPLE_INTERVAL] = (uint8_t) (normalizedSample / 256)+127; // Save in sequence of bytes, offset following 8bit wav spec.
       }else{
         clipSamples[i/SAVED_SAMPLE_INTERVAL] = normalizedSample; // Save in sequence no matter skips
       }
@@ -123,9 +123,9 @@ bool Dictaphone::saveRecording(fs::FS &fs, String filePrefix){
   
   pcm_wav_header_t wavHeader;
   if (SAVED_BIT_DEPTH_DIVIDE){
-    wavHeader = PCM_WAV_HEADER_DEFAULT(recordingLength, I2S_DATA_BIT_WIDTH_8BIT, RECORD_SAMPLE_RATE / SAVED_SAMPLE_INTERVAL, I2S_SLOT_MODE_MONO);
+    wavHeader = PCM_WAV_HEADER_DEFAULT(recordingLength, I2S_DATA_BIT_WIDTH_8BIT, (uint32_t) (RECORD_SAMPLE_RATE / SAVED_SAMPLE_INTERVAL), I2S_SLOT_MODE_MONO);
   }else{
-    wavHeader = PCM_WAV_HEADER_DEFAULT(recordingLength, I2S_DATA_BIT_WIDTH_16BIT, RECORD_SAMPLE_RATE / SAVED_SAMPLE_INTERVAL, I2S_SLOT_MODE_MONO); 
+    wavHeader = PCM_WAV_HEADER_DEFAULT(recordingLength, I2S_DATA_BIT_WIDTH_16BIT, (uint32_t) (RECORD_SAMPLE_RATE / SAVED_SAMPLE_INTERVAL), I2S_SLOT_MODE_MONO); 
   }
 
   bool failedWrite = file.write((uint8_t *)&wavHeader, PCM_WAV_HEADER_SIZE) != PCM_WAV_HEADER_SIZE; // Write the audio header to the file

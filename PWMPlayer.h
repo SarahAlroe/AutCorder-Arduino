@@ -22,6 +22,7 @@ class PWMPlayer {
     gpio_num_t pin;
     bool isInverted = false;
     bool isPatternPlaying = false;
+    bool isLooping = false;
     const int freq = 5000;
     const int resolution = 8;
     

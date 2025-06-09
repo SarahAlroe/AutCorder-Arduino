@@ -7,6 +7,7 @@ class Discord {
     Discord();
     void init(String id, String token, String botName);
     bool sendFile(File fileToSend);
+    bool sendMessage(String messageToSend);
 
   private:
     String id;

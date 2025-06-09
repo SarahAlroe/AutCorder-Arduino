@@ -12,10 +12,11 @@ Buzzer::Buzzer(gpio_num_t pin) {
 }
 
 void Buzzer::play(String filename) {
+  if (pin == 0){return;}
   if (!filename || filename == "") {
     return;
   }
-  ESP_LOGI(TAG,"Playing: %s", filename);
+  ESP_LOGI(TAG,"Playing: %s", filename.c_str());
   isMelodyPlaying = true;
   noteIndex = 0;
   noteCount = 0;
@@ -33,6 +34,7 @@ void Buzzer::play(String filename) {
 }
 
 void Buzzer::tick() {
+  if (pin == 0){return;}
   if (isMelodyPlaying && nextToneAt < millis()) {
     if (noteIndex >= noteCount) {
       this->stop();
@@ -46,11 +48,13 @@ void Buzzer::tick() {
 }
 
 boolean Buzzer::isPlaying() {
+  if (pin == 0){return false;}
   if (isMelodyPlaying) {tick();}
   return isMelodyPlaying;
 }
 
 void Buzzer::stop() {
+  if (pin == 0){return;}
   ledcWriteTone(pin, 0);
   ledcDetach(pin);
   gpio_reset_pin(pin);

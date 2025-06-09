@@ -1,17 +1,40 @@
+#include "esp32-hal-gpio.h"
 #include "Arduino.h"
 #include "esp_camera.h"
 #include "FS.h"
 #include "SD_MMC.h"
 #include "Camera.h"
 #include "time.h"
+#include "driver/gpio.h"
 
 static const char* TAG = "Camera";
 
 Camera::Camera() {
 }
 
-bool Camera::begin() {
+sensor_t *s;
+
+esp_err_t Camera::begin() {
+  pinMode(PIN_CAM_RESET, OUTPUT);
+  digitalWrite(PIN_CAM_RESET, LOW);
+  delay(2);
   // Init the camera
+  /*gpio_reset_pin(PIN_CAM_Y2);
+  gpio_reset_pin(PIN_CAM_Y3);
+  gpio_reset_pin(PIN_CAM_Y4);
+  gpio_reset_pin(PIN_CAM_Y5);
+  gpio_reset_pin(PIN_CAM_Y6);
+  gpio_reset_pin(PIN_CAM_Y7);
+  gpio_reset_pin(PIN_CAM_Y8);
+  gpio_reset_pin(PIN_CAM_Y9);
+  gpio_reset_pin(PIN_CAM_XVCLK);
+  gpio_reset_pin(PIN_CAM_PCLK);
+  gpio_reset_pin(PIN_CAM_VSYNC);
+  gpio_reset_pin(PIN_CAM_HREF);
+  gpio_reset_pin(PIN_CAM_SIO_D);
+  gpio_reset_pin(PIN_CAM_SIO_C);
+  gpio_reset_pin(PIN_CAM_RESET);*/
+
   camera_config_t config;
   config.pin_d0 = PIN_CAM_Y2;
   config.pin_d1 = PIN_CAM_Y3;
@@ -31,33 +54,34 @@ bool Camera::begin() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
   config.fb_location = CAMERA_FB_IN_PSRAM;
+  /*# if HW_VERSION<20
+    config.pin_pwdn = PIN_CAM_PWDN;
+  # endif*/
+
+  config.frame_size = FRAMESIZE_QVGA; // Start with lowest quality to speed up warmup
 
   if (psramFound()) {
     ESP_LOGI(TAG,"PSRAM Found");
-    config.frame_size = FRAMESIZE_UXGA;  // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
+    config.frame_size = FRAMESIZE_SXGA;  // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
     config.jpeg_quality = 10;
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
   } else {
     ESP_LOGI(TAG,"No PSRAM Found");
-    config.frame_size = FRAMESIZE_SVGA;
     config.jpeg_quality = 12;
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_DRAM;
   }
 
   esp_err_t err = esp_camera_init(&config);
-  delay(400);
   if (err == ESP_OK) {
     ESP_LOGI(TAG,"Initialized camera");
   }else{
     ESP_LOGE(TAG,"Camera init failed with error 0x%x", err);
-    delay(400);
-    return false;
+    return err;
   }
-  delay(400);
 
-  sensor_t *s = esp_camera_sensor_get();
+  s = esp_camera_sensor_get();
   s->set_brightness(s, 0);  // -2 to 2
   s->set_contrast(s, 0);    // -2 to 2
   s->set_saturation(s, 0);  // -2 to 2
@@ -67,10 +91,10 @@ bool Camera::begin() {
   s->set_wb_mode(s, 0);                     // 0 to 4 - if awb_gain enabled (0 - Auto, 1 - Sunny, 2 - Cloudy, 3 - Office, 4 - Home)
   s->set_exposure_ctrl(s, 1);               // 0 = disable , 1 = enable
   s->set_aec2(s, 1);                        // 0 = disable , 1 = enable
-  s->set_ae_level(s, 2);                    // -2 to 2
-  s->set_aec_value(s, 1200);                // 0 to 1200
+  s->set_ae_level(s, 0);                    // -2 to 2
+  //s->set_aec_value(s, 1200);                // 0 to 1200
   s->set_gain_ctrl(s, 1);                   // 0 = disable , 1 = enable
-  s->set_agc_gain(s, 30);                   // 0 to 30
+  //s->set_agc_gain(s, 30);                   // 0 to 30
   s->set_gainceiling(s, (gainceiling_t)6);  // 0 to 6
   s->set_bpc(s, 1);                         // 0 = disable , 1 = enable
   s->set_wpc(s, 1);                         // 0 = disable , 1 = enable
@@ -82,14 +106,16 @@ bool Camera::begin() {
   //s->set_colorbar(s, 0);       // 0 = disable , 1 = enable
 
   fb = NULL;
-  return true;
+  return ESP_OK;
 }
 
 void Camera::warmup() {
   // Warm up the camera. Appears to take out some of the noise.
   // OLD did this 8 times, 10ms delay
-  //fb = esp_camera_fb_get();
-  //esp_camera_fb_return(fb);
+  fb = esp_camera_fb_get();
+  if (fb){
+    esp_camera_fb_return(fb);
+  }
   warmupCount ++;
 }
 
@@ -99,6 +125,9 @@ bool Camera::takePicture() {
   while(warmupCount < 8){
     warmup();
   }
+
+  //s->set_framesize(s, FRAMESIZE_UXGA);
+  //delay(2);
   fb = esp_camera_fb_get();
   if (!fb) {
     ESP_LOGE(TAG,"Camera capture failed");
@@ -156,4 +185,9 @@ void Camera::stop(){
   esp_camera_fb_return(fb);
   esp_camera_return_all();
   esp_camera_deinit();
+
+  # if HW_VERSION<20
+    gpio_pulldown_dis(PIN_CAM_PWDN);
+    gpio_pullup_en(PIN_CAM_PWDN);
+  # endif
 }

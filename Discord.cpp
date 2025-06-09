@@ -4,17 +4,6 @@
 
 static const char* TAG = "Discord";
 
-Discord::Discord() {
-}
-
-void Discord::init(String id, String token, String botName) {
-  ESP_LOGI(TAG, "Initialising Discord bot %s", botName);
-  this->id = id;
-  this->token = token;
-  this->name = botName;
-}
-
-bool Discord::sendFile(File fileToSend){
     /*
   * Get current discordapp.com certificate:
   * openssl s_client -showcerts -connect discordapp.com:443
@@ -42,50 +31,107 @@ bool Discord::sendFile(File fileToSend){
   "CZMRJCQUzym+5iPDuI9yP+kHyCREU3qzuWFloUwOxkgAyXVjBYdwRVKD05WdRerw\n"
   "6DEdfgkfCv4+3ao8XnTSrLE=\n"
   "-----END CERTIFICATE-----\n";
+
+Discord::Discord() {
+}
+
+void Discord::init(String id, String token, String botName) {
+  ESP_LOGI(TAG, "Initialising Discord bot %s", botName.c_str());
+  this->id = id;
+  this->token = token;
+  this->name = botName;
+}
+
+bool Discord::sendFile(File fileToSend){
   
   fileToSend.seek(0);
-  NetworkClientSecure pclient;
-  pclient.setCACert(DISCORD_CERT);
+  NetworkClientSecure *client = new NetworkClientSecure;
+  client->setCACert(DISCORD_CERT);
   String serverName = "discord.com";
   String serverPath = "/api/webhooks/";
   int serverPort = 443;
-  if (pclient.connect(serverName.c_str(), serverPort)) {
-    String head = "--AutCam\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n\r\n{\"username\": \""+name+"\", \"content\": \""+fileToSend.name()+"\"}\r\n--AutCam\r\nContent-Disposition: form-data; name=\"file1\"; filename=\""+fileToSend.name()+"\"\r\nContent-Type: image/jpeg\r\n\r\n";
+  if (client->connect(serverName.c_str(), serverPort)) {
+    String head = "--AutCam\r\n"
+    "Content-Disposition: form-data; name=\"payload_json\"\r\n\r\n{\"username\": \""+name+"\", \"content\": \""+fileToSend.name()+"\"}"
+    "\r\n--AutCam\r\n"
+    "Content-Disposition: form-data; name=\"file1\"; filename=\""+fileToSend.name()+"\"\r\nContent-Type: image/jpeg\r\n\r\n";
     String tail = "\r\n--AutCam--\r\n";
     uint32_t imageLen = fileToSend.size();
     uint32_t extraLen = head.length() + tail.length();
     uint32_t totalLen = imageLen + extraLen;
-    pclient.println("POST " + serverPath + id + "/" + token + " HTTP/1.1");
-    pclient.println("Host: " + serverName);
-    pclient.println("Accept: */*");
-    pclient.println("Content-Type: multipart/form-data; boundary=AutCam");
-    pclient.println("Content-Length: " + String(totalLen));
-    pclient.println();
-    pclient.print(head);
+    client->println("POST " + serverPath + id + "/" + token + " HTTP/1.1");
+    client->println("Host: " + serverName);
+    client->println("Accept: */*");
+    client->println("Content-Type: multipart/form-data; boundary=AutCam");
+    client->println("Content-Length: " + String(totalLen));
+    client->println();
+    client->print(head);
   
     uint8_t buffer[1024];
     while( fileToSend.available() ) {
       size_t read_bytes = fileToSend.read( buffer, 1024 );
-      pclient.write(buffer, read_bytes);
+      client->write(buffer, read_bytes);
     }
-    pclient.print(tail);
+    client->print(tail);
     unsigned long timeout = millis();
-    while(pclient.available() == 0){
+    while(client->available() == 0){
       if(millis() - timeout > 5000){
         ESP_LOGW(TAG, "Client Timeout !");
-        pclient.stop();
+        client->stop();
         return false;
       }
     }
-    String firstLine = pclient.readStringUntil('\r');
-    ESP_LOGI(TAG, "< %s", firstLine);
+    String firstLine = client->readStringUntil('\r');
+    ESP_LOGI(TAG, "< %s", firstLine.c_str());
     firstLine = firstLine.substring(firstLine.indexOf(" ")+1, firstLine.indexOf(" ")+4); // Take the 3 character responsecode right after first space.
     bool got200Code = firstLine.toInt() < 300;
-    while(pclient.available()) {
-      String line = pclient.readStringUntil('\r');
-      ESP_LOGI(TAG, "< %s", line);
+    while(client->available()) {
+      String line = client->readStringUntil('\r');
+      ESP_LOGI(TAG, "< %s", line.c_str());
     }
-    pclient.stop();
+    client->stop();
+    return got200Code;
+  }else{
+    return false; // Failed to connect
+  }
+  return true;
+}
+
+bool Discord::sendMessage(String messageToSend){
+  NetworkClientSecure *client = new NetworkClientSecure;
+  client->setCACert(DISCORD_CERT);
+  String serverName = "discord.com";
+  String serverPath = "/api/webhooks/";
+  int serverPort = 443;
+  if (client->connect(serverName.c_str(), serverPort)) {
+    String head = "--AutCam\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n\r\n{\"username\": \""+name+"\", \"content\": \""+messageToSend+"\"}\r\n\r\n";
+    String tail = "\r\n--AutCam--\r\n";
+    uint32_t totalLen = head.length() + tail.length();
+    client->println("POST " + serverPath + id + "/" + token + " HTTP/1.1");
+    client->println("Host: " + serverName);
+    client->println("Accept: */*");
+    client->println("Content-Type: multipart/form-data; boundary=AutCam");
+    client->println("Content-Length: " + String(totalLen));
+    client->println();
+    client->print(head);
+    client->print(tail);
+    unsigned long timeout = millis();
+    while(client->available() == 0){
+      if(millis() - timeout > 5000){
+        ESP_LOGW(TAG, "Client Timeout !");
+        client->stop();
+        return false;
+      }
+    }
+    String firstLine = client->readStringUntil('\r');
+    ESP_LOGI(TAG, "< %s", firstLine.c_str());
+    firstLine = firstLine.substring(firstLine.indexOf(" ")+1, firstLine.indexOf(" ")+4); // Take the 3 character responsecode right after first space.
+    bool got200Code = firstLine.toInt() < 300;
+    while(client->available()) {
+      String line = client->readStringUntil('\r');
+      ESP_LOGI(TAG, "< %s", line.c_str());
+    }
+    client->stop();
     return got200Code;
   }else{
     return false; // Failed to connect

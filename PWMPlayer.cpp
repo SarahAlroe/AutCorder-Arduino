@@ -34,7 +34,7 @@ void PWMPlayer::play(String filename) {
   gpio_reset_pin(pin);
   //gpio_set_direction(pin, GPIO_MODE_OUTPUT);
   ledcAttach(pin, freq, resolution);
-  ESP_LOGI(TAG, "Playing: %s, Segments: %d, Segment size: %d", filename, segmentCount, sizeof(segmentCount));
+  ESP_LOGI(TAG, "Playing: %s, Segments: %lu, Segment size: %u", filename.c_str(), segmentCount, sizeof(segmentCount));
   this->tick();
 }
 
